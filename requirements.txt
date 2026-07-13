@@ -1,4 +1,8 @@
-feedparser
-requests
-beautifulsoup4
-python-dateutil
+requests==2.31.0
+feedparser==6.0.10
+beautifulsoup4==4.12.2
+praw==7.7.0
+pydub==0.25.1
+gTTS==2.3.2
+python-dotenv==1.0.0
+Pillow==10.0.0
