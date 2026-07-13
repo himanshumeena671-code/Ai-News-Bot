@@ -1,44 +1,22 @@
 import feedparser
 
-RSS_FEEDS = {
-    "Rockstar": "https://www.rockstargames.com/newswire/rss",
-    "IGN GTA": "https://feeds.ign.com/ign/all",
-    "GameRant": "https://gamerant.com/feed/",
-    "Dexerto": "https://www.dexerto.com/feed/"
-}
-
-
-KEYWORDS = [
-    "gta",
-    "gta 6",
-    "gta vi",
-    "grand theft auto",
-    "rockstar"
-]
-
+RSS_URL = (
+    "https://news.google.com/rss/search?"
+    "q=%22GTA+6%22+OR+%22Grand+Theft+Auto+VI%22+OR+Rockstar"
+    "&hl=en-US&gl=US&ceid=US:en"
+)
 
 def get_latest_news():
+    feed = feedparser.parse(RSS_URL)
+
     news = []
 
-    for source, url in RSS_FEEDS.items():
-        try:
-            feed = feedparser.parse(url)
-
-            for entry in feed.entries:
-                title = entry.get("title", "")
-                summary = entry.get("summary", "")
-
-                text = f"{title} {summary}".lower()
-
-                if any(keyword in text for keyword in KEYWORDS):
-                    news.append({
-                        "source": source,
-                        "title": title,
-                        "summary": summary,
-                        "link": entry.get("link", "")
-                    })
-
-        except Exception as e:
-            print(f"{source}: {e}")
+    for entry in feed.entries:
+        news.append({
+            "title": entry.get("title", ""),
+            "summary": entry.get("summary", ""),
+            "link": entry.get("link", ""),
+            "source": entry.get("source", {}).get("title", "Google News")
+        })
 
     return news
