@@ -26,7 +26,7 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
-          python bot.py
+          python test.py
 
       - name: Commit Output
         run: |
