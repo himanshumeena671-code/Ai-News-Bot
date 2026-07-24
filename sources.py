@@ -16,6 +16,18 @@ import time
 logger = logging.getLogger(__name__)
 
 
+def get_latest_news() -> List[Dict]:
+    """
+    Convenience function to get latest news.
+    Creates a NewsCollector instance and collects news from all sources.
+    
+    Returns:
+        List of collected news articles
+    """
+    collector = NewsCollector()
+    return collector.collect_all_news()
+
+
 class NewsCollector:
     """Collects GTA VI news from multiple sources."""
     
