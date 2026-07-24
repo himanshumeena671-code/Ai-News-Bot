@@ -6,12 +6,15 @@ Single Responsibility: Fetch and aggregate news from various sources.
 
 import feedparser
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from datetime import datetime
 import json
 import logging
 from typing import List, Dict
 import time
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +42,22 @@ class NewsCollector:
             timeout: Request timeout in seconds
         """
         self.timeout = timeout
+        # A more specific User-Agent helps avoid blocks
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'AI-News-Bot/1.0 (+https://github.com/himanshumeena671-code/Ai-News-Bot)'
         }
+        # Session with retries to handle transient network errors
+        self.session = requests.Session()
+        retries = Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"]
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+
         self.news_articles = []
     
     def fetch_google_news_rss(self) -> List[Dict]:
@@ -114,38 +130,74 @@ class NewsCollector:
     def fetch_reddit_gta6(self) -> List[Dict]:
         """
         Fetch trending posts from Reddit r/GTA6 subreddit.
+        Tries RSS first (more reliable for unauthenticated requests), then falls
+        back to the JSON endpoint with robust headers/retries.
         
         Returns:
             List of article dictionaries
         """
         try:
             logger.info("Fetching Reddit r/GTA6 posts...")
-            
-            url = "https://reddit.com/r/GTA6/hot.json"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            response = requests.get(url, headers=headers, timeout=self.timeout)
-            response.raise_for_status()
-            
-            data = response.json()
+
+            # Try RSS from old.reddit.com first (often less strict)
+            rss_urls = [
+                "https://old.reddit.com/r/GTA6/.rss",
+                "https://www.reddit.com/r/GTA6/.rss"
+            ]
+
             articles = []
-            
-            for post in data.get('data', {}).get('children', [])[:15]:
-                post_data = post.get('data', {})
-                article = {
-                    'title': post_data.get('title', ''),
-                    'link': f"https://reddit.com{post_data.get('permalink', '')}",
-                    'published': datetime.fromtimestamp(post_data.get('created_utc', 0)).isoformat(),
-                    'source': 'Reddit r/GTA6',
-                    'summary': post_data.get('selftext', '')[:500]
-                }
-                articles.append(article)
-            
-            logger.info(f"Fetched {len(articles)} Reddit posts")
-            return articles
-            
+            for rss_url in rss_urls:
+                try:
+                    resp = self.session.get(rss_url, headers=self.headers, timeout=self.timeout)
+                    if resp.status_code == 200:
+                        feed = feedparser.parse(resp.content)
+                        if getattr(feed, 'entries', None):
+                            for entry in feed.entries[:15]:
+                                article = {
+                                    'title': entry.get('title', ''),
+                                    'link': entry.get('link', ''),
+                                    'published': entry.get('published', datetime.now().isoformat()),
+                                    'source': 'Reddit r/GTA6',
+                                    'summary': entry.get('summary', '')
+                                }
+                                articles.append(article)
+                            logger.info(f"Fetched {len(articles)} Reddit posts via RSS ({rss_url})")
+                            return articles
+                except requests.RequestException as re:
+                    logger.debug(f"RSS request to {rss_url} failed: {re}")
+
+            # RSS failed or returned no entries — fall back to JSON endpoint
+            json_url = "https://www.reddit.com/r/GTA6/hot.json"
+            try:
+                resp = self.session.get(json_url, headers=self.headers, timeout=self.timeout)
+                resp.raise_for_status()
+
+                data = resp.json()
+                for post in data.get('data', {}).get('children', [])[:15]:
+                    post_data = post.get('data', {})
+                    article = {
+                        'title': post_data.get('title', ''),
+                        'link': f"https://reddit.com{post_data.get('permalink', '')}",
+                        'published': datetime.fromtimestamp(post_data.get('created_utc', 0)).isoformat(),
+                        'source': 'Reddit r/GTA6',
+                        'summary': post_data.get('selftext', '')[:500]
+                    }
+                    articles.append(article)
+
+                logger.info(f"Fetched {len(articles)} Reddit posts via JSON")
+                return articles
+
+            except requests.HTTPError as he:
+                logger.error(f"HTTP error fetching Reddit JSON: {he} (status {getattr(he.response, 'status_code', None)})")
+                # If 403, likely blocked — return empty list gracefully
+                return []
+            except requests.RequestException as re:
+                logger.error(f"Request error fetching Reddit JSON: {re}")
+                return []
+            except ValueError as ve:
+                logger.error(f"JSON decode error from Reddit response: {ve}")
+                return []
+
         except Exception as e:
             logger.error(f"Error fetching Reddit r/GTA6: {str(e)}")
             return []
@@ -188,6 +240,9 @@ class NewsCollector:
     def fetch_gamerant(self) -> List[Dict]:
         """
         Fetch gaming news from GameRant RSS feed.
+        Uses a requests-based fetch + feedparser.parse on content so we control
+        headers, timeouts, and retries. This reduces "remote end closed connection"
+        errors seen on some CI environments.
         
         Returns:
             List of article dictionaries
@@ -195,14 +250,19 @@ class NewsCollector:
         try:
             logger.info("Fetching GameRant news...")
             url = "https://gamerant.com/feed/"
-            
-            feed = feedparser.parse(url)
+
+            resp = self.session.get(url, headers=self.headers, timeout=self.timeout)
+            resp.raise_for_status()
+
+            feed = feedparser.parse(resp.content)
+            if getattr(feed, 'bozo', False):
+                logger.debug(f"GameRant feed bozo_exception: {getattr(feed, 'bozo_exception', None)}")
+
             articles = []
-            
             for entry in feed.entries[:20]:
                 title = entry.get('title', '').lower()
                 summary = entry.get('summary', '').lower()
-                
+
                 if 'gta' in title or 'gta' in summary or 'grand theft' in title or 'grand theft' in summary:
                     article = {
                         'title': entry.get('title', ''),
@@ -212,10 +272,13 @@ class NewsCollector:
                         'summary': entry.get('summary', '')
                     }
                     articles.append(article)
-            
+
             logger.info(f"Fetched {len(articles)} GameRant articles")
             return articles
             
+        except requests.RequestException as re:
+            logger.error(f"Request error fetching GameRant: {re}")
+            return []
         except Exception as e:
             logger.error(f"Error fetching GameRant: {str(e)}")
             return []
